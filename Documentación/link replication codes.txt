@@ -1,0 +1,3 @@
+GLP 2015: https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/27345
+
+How to Estimate a VAR after March 2020: http://qed.econ.queensu.ca/jae/2022-v37.4/lenza-primiceri/

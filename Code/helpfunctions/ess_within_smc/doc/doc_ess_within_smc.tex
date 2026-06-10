@@ -1,0 +1,262 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage{setspace}
+\onehalfspacing
+
+\title{Sequential Monte Carlo with Sign Restrictions: \\ Application of our Gibbs sampler based on Elliptical Slice Sampling}
+\author{Jonas, Juan, Minchul}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+The script \texttt{ess\_within\_smc.m} implements a sequential Monte Carlo (SMC) procedure for estimating a vector autoregression (VAR) subject to a collection of sign restrictions on the impulse responses. The algorithm maintains a particle representation of the posterior and updates particles through mutation and resampling steps while enforcing the restrictions at each stage.
+
+\bigskip
+\noindent There are two contributions to the previous SMC implementation of econometric models.
+
+\begin{enumerate}
+\item  We develop an adaptive way to introduce a sequence of posterior distribution where the restrictions are progressively tighter and eventually it approaches to the true restrictions.
+\item  We use our new Gibbs sampler based on elliptical slice sampling algorithm as a transition kernel in the mutation step. This is a very nice application of our new Gibbs sampler as it makes sure that it generates draws that satisfy restrictions, which we need for the mutation step.
+\end{enumerate}
+
+\bigskip
+The actual algorithm is presented in the last section of this document.
+
+
+
+\section{Sign Restrictions}
+Let $S(\cdot)$ denote the mapping implemented by \texttt{function\_restrictions\_Svec} that takes orthogonal reduced-form parameters $(B,\Sigma,Q)$ and returns an $r \times 1$ vector of restricted responses. For particle $i=1,\ldots,G$, define
+\[
+Svec^{(i)} = S\!\left(B^{(i)},\Sigma^{(i)},Q^{(i)}\right).
+\]
+Suppose the VAR imposes $r$ restrictions. The sign constraints take the form
+\begin{align*}
+0 &< Svec^{(i)}_1, \\
+0 &< Svec^{(i)}_2, \\
+&\ \vdots \\
+0 &< Svec^{(i)}_r,
+\end{align*}
+for each particle $i$. These inequalities are evaluated for every particle and mutation draw, ensuring that only draws consistent with the imposed theory survive in the particle system.
+
+\paragraph{Remark 1 (Effective Zero).}
+Numerically, we replace the theoretical boundary at zero with an ``effective zero'' $\varepsilon>0$ to avoid floating point comparisons with exact zeros (and, to convert zero restrictions into approximate zero restrictions; see the next remark). In practice we set it to a small number. For example, when we impose restrictions on the impulse responses in log-deviation, we set it to $\varepsilon \approx 10^{-4}$ and implement the constraint as
+\[
+\varepsilon < Svec^{(i)}_j \qquad \text{for each component } j=1,\ldots,r.
+\]
+This small buffer keeps particles comfortably inside the feasible region while remaining economically indistinguishable from the sharp sign restriction.
+
+
+\paragraph{Remark 2 (Zero Restrictions).}
+Zero restrictions can be handled within the same framework by insisting that a response be close to, but not exactly, zero. We require
+\[
+-\varepsilon < Svec^{(i)}_j < \varepsilon,
+\]
+which is equivalent to enforcing the pair of sign restrictions
+\[
+\varepsilon < Svec^{(i)}_j 
+\qquad \text{and} \qquad
+\varepsilon < - Svec^{(i)}_j.
+\]
+Hence a single zero restriction is implemented as two tight sign restrictions, allowing the SMC algorithm to treat all constraints uniformly. The effective zero therefore governs both strictly positive bounds and tight two-sided bands around zero-valued responses.
+
+\section{Sequential Thresholding}
+To maintain a high effective sample size, the algorithm introduces adaptive cutoffs that are tightened over the SMC iterations. For iteration $n = 1,2,\ldots$, let $c_{n} = \left(c_{1,n}, \ldots, c_{r,n}\right)'$ denote the current vector of thresholds, chosen to balance acceptance rates with the need to enforce the restrictions strictly. The acceptance rule is
+\begin{align*}
+c_{1,n} &< Svec_1, \\
+c_{2,n} &< Svec_2, \\
+&\ \vdots \\
+c_{r,n} &< Svec_r.
+\end{align*}
+Thresholds are updated adaptively based on the distribution of draws at each step so that the particles progressively concentrate on the region that satisfies the sign restrictions exactly.
+
+\section{Adaptive Restriction Strategy}
+The target of interest is the posterior density restricted by strict sign inequalities,
+\[
+    \pi(B,\Sigma,Q) \propto p(B,\Sigma,Q \mid Y)\,\mathbf{1}\!\left\{0 < S(B,\Sigma,Q)\right\}.
+\]
+We approximate the boundary $0$ with an effective zero such as $\varepsilon = \texttt{smc\_eff\_zero} \approx 10^{-2}$, which promotes numerical stability. Directly sampling from this distribution can still be challenging when the identified set is tight. Rather than enforcing the full restriction immediately, we begin with a much looser cutoff,
+\[
+    \pi_1(B,\Sigma,Q) \propto p(B,\Sigma,Q \mid Y)\,\mathbf{1}\!\left\{c_1 < S(B,\Sigma,Q)\right\},
+\]
+where each component of $c_1$ is set far below zero. We then tighten the cutoffs monotonically,
+\[
+    c_1 < c_2 < c_3 < \cdots < c_N = 0,
+\]
+so that the $n$th posterior $\pi_n$ imposes more stringent constraints than $\pi_{n-1}$. 
+
+Sequential Monte Carlo provides a natural mechanism for traversing this ladder of posteriors: each stage uses particles drawn from $\pi_{n-1}$ as proposals for $\pi_n$ and updates their weights based on the stricter indicator $\mathbf{1}\{c_n < S(\cdot)\}$. 
+
+As we will see in the detailed algorithm below, we design the cutoff-search step so that all particles carried forward already satisfy the next-stage restrictions. This construction is a novel feature of our SMC scheme and ensures that the subsequent mutation step starts from a feasible cloud. Consequently, the Gibbs kernel implemented through elliptical slice sampling preserves feasibility automatically and serves as an efficient transition kernel for propagating the particle cloud while maintaining the restrictions.
+
+\section{Algorithm: ESS within SMC Algorithm}
+The code executes an SMC sampler augmented with elliptical slice sampling (ESS) mutations. We adopt the notation
+\begin{align*}
+n &\in \{1,\ldots,N\} &&\text{: SMC iteration index},\\
+i &\in \{1,\ldots,G\} &&\text{: particle index},\\
+M & &&\text{: number of ESS transitions within the mutation step}.
+\end{align*}
+The tuning constants \texttt{smc\_target\_ar} and \texttt{smc\_eff\_zero} denote, respectively, the target acceptance probability in the cutoff search stage and the effective zero used when truncating quantiles. With this notation in place, the main stages are:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Initial particles} ($n=1$): For each particle index $i = 1,\ldots,G$, draw $(B^{(i)},\Sigma^{(i)},Q^{(i)})$ iid from the Normal--Inverse-Wishart posterior implied by the conjugate prior,
+    \[
+    (B^{(i)},\Sigma^{(i)},Q^{(i)}) \sim p(B,\Sigma, Q \mid Y),
+    \]    
+    Compute the associated $Svec^{(i)}$ via \texttt{function\_restrictions\_Svec}; 
+    \[
+    Svec^{(i)} = S\!\left(B^{(i)},\Sigma^{(i)},Q^{(i)}\right).
+    \]
+    where $Svec$ is $r \times 1$ vector where $r$ is the number of restrictions.
+    Initialize the particle arrays and assign unit weights. This initialization corresponds to the first SMC iteration $n=1$.
+    \item \textbf{Iterative SMC loop} ($n=2, 3, \ldots$):
+    \begin{enumerate}[label*=\arabic*., leftmargin=*]
+        \item \textbf{Cutoff search}: Let $q_n$ be the largest quantile level in $(0,1)$ such that
+        \[
+            \frac{1}{G}\sum_{i=1}^G \mathbf{1}\!\left\{Svec^{(i)}_j > \widetilde{c}_j(q) \ \forall j\right\} \ge \texttt{smc\_target\_ar},
+        \]
+        where $\widetilde{c}_j(q)$ is the empirical $q$-quantile of $\{Svec^{(i)}_j\}_{i=1}^G$ truncated above by $-\texttt{smc\_eff\_zero}$. Setting $q = q_n$ yields a common quantile for all components, and the thresholds become $c_{j,n} = \widetilde{c}_j(q_n)$, collected into $c_n = (c_{1,n},\ldots,c_{r,n})'$. This guarantees that at least the target share of particles satisfies all restrictions in iteration $n$.
+        \item \textbf{Correction}: The weights take the simple form $w^{(i)}_n = \mathbf{1}\!\{\text{particle } i \text{ satisfies all restrictions}\}$, because the feasibility indicators were already computed while determining $q_n$. Particles failing any constraint receive weight zero. 
+        
+        \item \textbf{Selection}:
+        The resampling step then draws $G$ indices with replacement from the survivors, yielding a refreshed collection of feasible particles with equal weights.
+        \item \textbf{Mutation}: For each $i$, we iterate using the following transition kernel $M$ times, starting from the resampled particle:
+            \[
+                (B^{(i)}, \Sigma^{(i)}, Q^{(i)}) \sim k(\cdot \mid B^{(i)}, \Sigma^{(i)}, Q^{(i)}),
+            \]
+        where $k$ denotes the elliptical slice kernel whose stationary distribution matches the $n$th SMC posterior,
+        \[
+            \pi_n(B,\Sigma,Q) \propto p(B,\Sigma,Q \mid Y)\,\mathbf{1}\!\left\{c_n < S(B,\Sigma,Q)\right\}.
+        \]
+        Note that the cutoff search and resampling ensure each retained particle satisfies $\mathbf{1}\{c_n < S(B^{(i)},\Sigma^{(i)},Q^{(i)})\}=1$, which makes our proposed Gibbs sampler based on elliptical slice sampling attractive. 
+
+    \end{enumerate}
+    \item \textbf{Termination and output}: Stop when cutoffs converge to the effective zero or the maximum iteration cap is reached. Return all retained particle draws $\{B^{(i)},\Sigma^{(i)},Q^{(i)}\}_{i=1}^G$.
+\end{enumerate}
+
+
+\section{A Simple Toy Example}
+Let's start with a very simple example,
+\[
+y_{t} = x_{t} \beta + u_{t}, \quad u_{t} \sim N(0,1)
+\]
+where $\beta$ is univariate parameter to be estimated with a prior $\beta \sim N(0,1) 1\{0 < \beta \}$ (that is, a truncated normal). Of course, this is a simple example where the posterior distribution is known (which is, truncated normal). But, we use this example to illustrate our SMC algorithm.
+
+We are interested in the posterior distribution.
+\[
+p(\beta|data)  \propto p(data|\beta) p(\beta)
+\]
+
+
+The sequential monte carlo method (this is different from particle filtering; but similar) introduces a sequence auxiliary posterior distributions where the last distribution is the posterior distribution that we are interested in
+\[
+\pi_{1}(\beta) \rightarrow \pi_{2}(\beta) \rightarrow \cdots \rightarrow \pi_{N-1}(\beta) \rightarrow \pi_{N}(\beta)=p(\beta|data)
+\]
+
+Then, we iteratively apply importance sampling from $\pi_{1}(\beta)$ to $\pi_{N}(\beta)$. 
+
+\paragraph{Choice of the auximilary posterior distributions.}
+
+Now, getting back to our original problem, let's discuss how to create a sequence of posterior distribution to operationalize this problem.
+
+Our proposal for the sign-restricted VAR goes like this. We let $n$-th posterior distribution to be 
+\[
+\pi_{n}(\beta|data) \propto p(\beta|data) N(\beta; 0, 1) 1\{ c_{n} < \beta\}
+\]
+
+Choose $c_{1} = -\infty$. Then, choose $c_{2}$ be some negative number. Then,
+\[
+c_{2} < c_{3} < \cdots < c_{N-1} < c_{N} = 0.
+\]
+
+
+Why this choice? First by setting $c_{1} = -\infty$, the initial distribution's prior distribution is unrestricted. That is
+\[
+\pi_{1}(\beta|data) \propto p(\beta|data) N(\beta; 0,1)
+\]
+
+The second choice $c_{2}$ is some negative number so that 
+\[
+\pi_{n}(\beta|data) \propto p(\beta|data) N(\beta; 0, 1) 1\{ c_{2} < \beta\}
+\]
+
+Note that the restriction attached to this is easier to satisfy than the original restriction 
+\[
+1\{c_{2} < \beta \} \quad \text{versus} \quad 1\{0 < \beta \}
+\]
+as $c_{2}$ is a negative number. By the similar logic, the restriction attached to $(n-1)$-th posterior is easier to satisfy than the restriction attached to $n$-th posterior,
+\[
+1\{c_{n-1} < \beta \} \quad \text{versus} \quad 1\{c_{n} < \beta \}
+\]
+
+So, we just introduce a sequence of posterior distribution where
+\begin{itemize}	
+\item The initial distribution is the unrestricted posterior distribution, $\propto p(data|\beta) p(\beta)$
+\item The intermediate distributions are restricted posterior distributions with the relaxed restrictions.
+\item We progressively tighten the restriction by increasing $c_{n}$ until it gets to $c_{N} = 0$, which is the original restriction that we want to satisfy.
+\item The final posterior distribution is $\propto p(data|\beta) p(\beta) 1\{0 < \beta\}$.
+\end{itemize}
+
+Once we pick the sequence of $c_{n}$'s, running the sequential monte carlo amounts to running particle filtering by treating $\beta$ as state. 
+
+\paragraph{Importance sampling.} As I mentioned earlier, the main idea is to iteratively apply importance sampling. Let me give you the idea how the importance sampling is done each step. Suppose we are in $n$-th stage. That is, we have a set of particles $\{\beta^{(g)}\}_{g=1}^{G}$ from $\pi_{n-1}(\beta)$ (for simplicity, suppose they are i.i.d. draws). 
+
+(Correction step) Then, to approximate the $n$-th posterior distribution, we need to update weight (this is importance weight)
+\[
+w^{g}_{n} \propto \frac{\pi_{n}(\beta^{(g)})}{\pi_{n-1}(\beta^{(g)})} = \frac{p(data|\beta^{(g)})N(\beta^{(g)}; 0,1) 1\{c_{n}<\beta^{(g)}\}}{p(data|\beta)N(\beta^{(g)}; 0,1) 1\{c_{n-1}<\beta^{(g)}\}} = \frac{1\{c_{n}<\beta^{(g)}\}}{1\{c_{n-1}<\beta^{(g)}\}} = 1\{c_{n} < \beta^{(g)}\}
+\]
+where the weight formula simplifies thanks to the way we chose the intermediate distributions.
+Note that because draws are from $\pi_{n-1}(\beta)$, the denominator is 1 for all draws by construction.
+
+(Selection step) Based on the new weights, we resample the particles. This step is basically to replace those dead particles (those that do not satisfy new restrictions) with survived ones (those that satisfy new restrictions).
+
+(Mutation step) Then, we propagate particles based on the transition kernel
+\[
+\beta^{(g)} \sim k_{n}(\beta_{n}|\beta^{(g)})
+\]
+For theoretical validity, we need $k_{n}$ to be chosen in a way that its stationary distribution is $\pi_{n}(\beta)$ which can be achieved by our Elliptical slice sampler. 
+
+In a typical importance sampling, we don't have the mutation step. Theoretically, we don't need this step, but when there are many intermediate steps (when $N$ is large), the particles will degenerate due to iterative application of correction-resample steps over iterations (hence, the variance of IS estimation blows up). Mutation step overcomes this issue by propagating particles so that they restore variations. 
+
+\paragraph{Adaptive selection of $c_{n}$.} Selection of the sequence $c_{n}$ is important. If it is too aggressive (small number of steps to 0), then effective number of particles will be low. If it is not aggressive (many steps to 0), the algorithm will be very slow.
+
+In our main SVAR application, we choose $c_{n}$ in a way that it accepts at least $x$\% of particles. Before we enter the correction step, using the particles $\{\beta^{(g)}\}_{g=1}^{G}$, we adaptively choose $c_{n}$ such that 
+\[
+\frac{1}{G} \sum_{g=1}^{G} 1\{c_{n} < \beta^{(g)}\} \approx x \%.
+\]
+This calculation is cheap even with very large number of restrictions as right-hand-side of the inequality can be computed once. We only change the left-hand-side of the inequality to find the optimal $c_{n}$.
+
+
+
+\end{document}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

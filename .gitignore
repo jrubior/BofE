@@ -1,0 +1,7 @@
+
+*.asv
+*.eps
+*.dat
+*.png
+
+.DS_Store
